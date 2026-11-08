@@ -463,6 +463,26 @@ body {
   }
 }
 
+/* History Tabs & Analytics */
+.active-tab {
+  background: var(--primary) !important;
+  color: #ffffff !important;
+  border-color: var(--primary) !important;
+}
+
+.btn-date-preset.active {
+  background: var(--primary-light) !important;
+  color: var(--primary-dark) !important;
+  border-color: var(--primary) !important;
+  font-weight: 700 !important;
+}
+
+.btn-timeframe.active {
+  background: #0f172a !important;
+  color: #ffffff !important;
+  border-color: #0f172a !important;
+}
+
 /* Mobile responsive */
 @media (max-width: 640px) {
   .app-header {

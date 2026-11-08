@@ -80,6 +80,7 @@ export interface Order {
   totalSellingPrice: number;
   totalSoldAtPrice?: number; // Optional actual sold price
   quotaDifference?: number; // totalSoldAtPrice - totalSellingPrice
+  updatedAt?: string;
   notes?: string;
 }
 

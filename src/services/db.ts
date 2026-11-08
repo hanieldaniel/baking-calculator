@@ -103,6 +103,10 @@ export class DatabaseService {
     return orders.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }
 
+  async getOrder(id: string): Promise<Order | undefined> {
+    return this.perform<Order | undefined>('orders', 'readonly', (store) => store.get(id));
+  }
+
   async saveOrder(order: Order): Promise<void> {
     await this.perform('orders', 'readwrite', (store) => store.put(order));
   }

@@ -26,6 +26,17 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
   const preselectedRecipeId = sessionStorage.getItem('bakemaster_selected_recipe_id');
   sessionStorage.removeItem('bakemaster_selected_recipe_id');
 
+  // Check if editing an existing order from history
+  const hash = window.location.hash;
+  const qIndex = hash.indexOf('?');
+  const urlParams = new URLSearchParams(qIndex !== -1 ? hash.slice(qIndex + 1) : '');
+  const editOrderId = urlParams.get('edit');
+
+  let editingOrder: Order | undefined = undefined;
+  if (editOrderId) {
+    editingOrder = await dbService.getOrder(editOrderId);
+  }
+
   const activeBatch: ActiveBatchItem[] = [];
 
   function addRecipeToBatch(recipe: Recipe) {
@@ -38,7 +49,38 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
     });
   }
 
-  if (preselectedRecipeId) {
+  if (editingOrder) {
+    for (const item of editingOrder.items) {
+      const matched = recipes.find((r) => r.id === item.recipeId);
+      const recipe: Recipe = matched || {
+        id: item.recipeId,
+        name: item.recipeName,
+        category: 'Custom',
+        outputValue: item.outputValue,
+        outputUnit: item.outputUnit ?? 'kg',
+        ingredients: item.scaledIngredients.map((ing) => ({
+          id: ing.ingredientId || ing.name,
+          name: ing.name,
+          quantity: Math.round((ing.quantity / (item.scaleMultiplier || 1)) * 1000) / 1000,
+          unit: ing.unit,
+          costPerUnit: ing.costPerUnit
+        })),
+        defaultOverheadCost: item.overheadCost,
+        defaultMarkupPercent: item.markupPercent,
+        createdAt: editingOrder.date,
+        updatedAt: new Date().toISOString()
+      };
+
+      activeBatch.push({
+        id: `batch-item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        recipe,
+        targetOutputValue: item.outputValue,
+        overheadCost: item.overheadCost,
+        markupPercent: item.markupPercent,
+        soldAtPrice: item.soldAtPrice
+      });
+    }
+  } else if (preselectedRecipeId) {
     const matched = recipes.find((r) => r.id === preselectedRecipeId);
     if (matched) addRecipeToBatch(matched);
   }
@@ -57,6 +99,8 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
         <button id="btn-clear-batch" class="btn btn-secondary btn-sm">Clear</button>
       </div>
     </div>
+
+    <div id="edit-banner-slot"></div>
 
     <!-- Container for active recipe cards -->
     <div id="batch-items-container" style="display: flex; flex-direction: column; gap: 1.5rem;">
@@ -145,6 +189,9 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
         <button id="btn-save-order" class="btn btn-primary btn-lg">
           💾 Save to History
         </button>
+        <button id="btn-save-as-new" class="btn btn-secondary btn-lg" style="display: none;" title="Save as a new separate order without modifying the original">
+          📋 Save as Copy
+        </button>
         <button id="btn-print-order" class="btn btn-secondary btn-lg">
           🖨️ Print Prep Sheet
         </button>
@@ -170,7 +217,40 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
 
   const orderTitleInput = container.querySelector('#order-title') as HTMLInputElement;
   const btnSaveOrder = container.querySelector('#btn-save-order') as HTMLButtonElement;
+  const btnSaveAsNew = container.querySelector('#btn-save-as-new') as HTMLButtonElement;
   const btnPrintOrder = container.querySelector('#btn-print-order') as HTMLButtonElement;
+  const editBannerSlot = container.querySelector('#edit-banner-slot') as HTMLElement;
+
+  if (editingOrder) {
+    if (editBannerSlot) {
+      editBannerSlot.innerHTML = `
+        <div style="background: #e0f2fe; border: 1px solid #7dd3fc; color: #0369a1; padding: 0.85rem 1.25rem; border-radius: var(--radius); margin-bottom: 1.25rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+          <div>
+            <strong>✏️ Editing Historical Order:</strong> <span style="font-family: monospace; font-weight: 700;">${escapeHtml(editingOrder.orderNumber)}</span> — ${escapeHtml(editingOrder.title)}
+            <div style="font-size: 0.82rem; color: #0284c7; margin-top: 0.2rem;">
+              Created: ${new Date(editingOrder.date).toLocaleDateString('en-IN', { dateStyle: 'medium' })}
+              ${editingOrder.deliveryDate ? ` • 🚚 Delivery: ${new Date(editingOrder.deliveryDate).toLocaleDateString('en-IN', { dateStyle: 'medium' })}` : ''}
+            </div>
+          </div>
+          <div style="display: flex; gap: 0.5rem;">
+            <a href="#history" class="btn btn-secondary btn-sm" style="background: #ffffff; border-color: #bae6fd; color: #0369a1; text-decoration: none;">
+              Cancel Edit
+            </a>
+          </div>
+        </div>
+      `;
+    }
+    orderTitleInput.value = editingOrder.title || editingOrder.customerName || '';
+    const deliveryDateInput = container.querySelector('#order-delivery-date') as HTMLInputElement;
+    if (deliveryDateInput && editingOrder.deliveryDate) {
+      deliveryDateInput.value = editingOrder.deliveryDate;
+    }
+    if (orderSoldAtPriceInput && editingOrder.totalSoldAtPrice !== undefined) {
+      orderSoldAtPriceInput.value = editingOrder.totalSoldAtPrice.toString();
+    }
+    btnSaveOrder.textContent = `💾 Update Order (${editingOrder.orderNumber})`;
+    if (btnSaveAsNew) btnSaveAsNew.style.display = 'inline-block';
+  }
 
   function calculateSingleItem(item: ActiveBatchItem): OrderItem {
     const baseOutput = item.recipe.outputValue ?? 1;
@@ -314,8 +394,7 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
     if (orderSoldAtPriceInput && document.activeElement !== orderSoldAtPriceInput) {
       if (hasAnyCustomSoldPrice) {
         orderSoldAtPriceInput.value = itemsSoldSum.toString();
-      } else {
-        orderSoldAtPriceInput.value = '';
+      } else if (!orderSoldAtPriceInput.value) {
         orderSoldAtPriceInput.placeholder = `Calculated: ${formatCurrency(finalPrice)}`;
       }
     }
@@ -524,11 +603,15 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
   btnClearBatch.addEventListener('click', () => {
     if (activeBatch.length > 0 && confirm('Clear all items from this calculation?')) {
       activeBatch.length = 0;
+      if (editingOrder) {
+        window.location.hash = '#calculator';
+        return;
+      }
       renderBatchStructure();
     }
   });
 
-  btnSaveOrder.addEventListener('click', async () => {
+  async function performSaveOrder(isUpdate: boolean) {
     if (activeBatch.length === 0) {
       alert('Add at least one recipe before saving.');
       return;
@@ -553,6 +636,31 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
 
     const deliveryDateInput = container.querySelector('#order-delivery-date') as HTMLInputElement;
     const deliveryDate = deliveryDateInput?.value || undefined;
+
+    if (isUpdate && editingOrder) {
+      const title = orderTitleInput.value.trim() || editingOrder.title;
+      const updatedOrder: Order = {
+        ...editingOrder,
+        title,
+        customerName: orderTitleInput.value.trim(),
+        deliveryDate,
+        updatedAt: new Date().toISOString(),
+        items: calculatedOrderItems,
+        aggregatedIngredients: aggregated,
+        totalIngredientCost: totalIngCost,
+        totalOverheadCost: totalOverhead,
+        totalCost,
+        totalSellingPrice: finalPrice,
+        totalSoldAtPrice: effectiveSoldAtPrice,
+        quotaDifference
+      };
+
+      await dbService.saveOrder(updatedOrder);
+      await fileSyncService.saveBackupToDisk();
+      showToast(`Updated ${editingOrder.orderNumber} successfully.`);
+      window.location.hash = '#history';
+      return;
+    }
 
     const dateStr = new Date().toISOString();
     const orderNum = `ORD-${Date.now().toString().slice(-6)}`;
@@ -581,7 +689,10 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
     orderTitleInput.value = '';
     if (deliveryDateInput) deliveryDateInput.value = '';
     window.location.hash = '#history';
-  });
+  }
+
+  btnSaveOrder.addEventListener('click', () => performSaveOrder(!!editingOrder));
+  btnSaveAsNew?.addEventListener('click', () => performSaveOrder(false));
 
   btnPrintOrder.addEventListener('click', () => {
     window.print();
