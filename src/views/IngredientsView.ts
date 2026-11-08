@@ -1,6 +1,7 @@
 import { dbService } from '../services/db';
 import { fileSyncService } from '../services/fileSync';
 import { CatalogIngredient, UnitType } from '../types';
+import { calculateFractionalCost } from '../utils/calculator';
 import { formatCurrency, showToast, escapeHtml } from '../utils/ui';
 
 export async function renderIngredientsView(container: HTMLElement): Promise<void> {
@@ -65,13 +66,39 @@ export async function renderIngredientsView(container: HTMLElement): Promise<voi
               </select>
             </div>
             <div class="form-group">
-              <label class="form-label" for="ingredient-cost">Cost (₹) per Unit *</label>
-              <input type="number" id="ingredient-cost" class="form-control" step="0.01" min="0" required placeholder="e.g. 60" />
+              <label class="form-label" for="ingredient-cost">Cost (₹) per Default Unit *</label>
+              <input type="number" id="ingredient-cost" class="form-control" step="any" min="0" required placeholder="e.g. 60" />
             </div>
+          </div>
+
+          <!-- Fractional / Pack Cost Calculator -->
+          <div style="background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: var(--radius); padding: 0.85rem; margin-bottom: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+              <span style="font-size: 0.85rem; font-weight: 700; color: #334155;">📦 Fractional / Pack Cost Helper (Optional)</span>
+              <span style="font-size: 0.75rem; color: var(--text-muted);">e.g. 400 g costs ₹240</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 2fr 1.5fr 2fr; gap: 0.5rem; align-items: center;">
+              <div>
+                <input type="number" id="pack-qty" class="form-control" step="any" min="0.001" placeholder="Quantity (e.g. 400)" />
+              </div>
+              <div>
+                <select id="pack-unit" class="form-control">
+                  <option value="g">g</option>
+                  <option value="kg">kg</option>
+                  <option value="ml">ml</option>
+                  <option value="l">l</option>
+                  <option value="pcs">pcs</option>
+                </select>
+              </div>
+              <div>
+                <input type="number" id="pack-price" class="form-control" step="any" min="0" placeholder="Total Cost ₹ (e.g. 240)" />
+              </div>
+            </div>
+            <div id="pack-calc-preview" style="font-size: 0.8rem; color: var(--primary-dark); margin-top: 0.4rem; font-weight: 600; display: none;"></div>
           </div>
           <div class="form-group" id="gram-eq-group">
             <label class="form-label" for="ingredient-gram-eq">Gram Equivalent (weight for 1 unit)</label>
-            <input type="number" id="ingredient-gram-eq" class="form-control" step="0.1" min="0" placeholder="e.g. 50 for 1 egg, 1 for 1ml" />
+            <input type="number" id="ingredient-gram-eq" class="form-control" step="any" min="0" placeholder="e.g. 50 for 1 egg, 1 for 1ml" />
             <span style="font-size: 0.75rem; color: var(--text-muted);">Used for scaling recipes by total weight accurately.</span>
           </div>
           <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.5rem;">
@@ -96,13 +123,47 @@ export async function renderIngredientsView(container: HTMLElement): Promise<voi
   const gramEqInput = container.querySelector('#ingredient-gram-eq') as HTMLInputElement;
   const gramEqGroup = container.querySelector('#gram-eq-group') as HTMLElement;
 
+  const packQtyInput = container.querySelector('#pack-qty') as HTMLInputElement;
+  const packUnitSelect = container.querySelector('#pack-unit') as HTMLSelectElement;
+  const packPriceInput = container.querySelector('#pack-price') as HTMLInputElement;
+  const packPreview = container.querySelector('#pack-calc-preview') as HTMLElement;
+
+  function recalculateFractionalCost() {
+    const qty = parseFloat(packQtyInput.value);
+    const price = parseFloat(packPriceInput.value);
+    const pUnit = packUnitSelect.value as UnitType;
+    const dUnit = unitSelect.value as UnitType;
+
+    if (qty > 0 && price >= 0) {
+      const calculated = calculateFractionalCost({
+        packQuantity: qty,
+        packUnit: pUnit,
+        packPrice: price,
+        targetUnit: dUnit
+      });
+      costInput.value = calculated.toString();
+      packPreview.style.display = 'block';
+      packPreview.textContent = `✓ Calculated: ${qty} ${pUnit} @ ₹${price} = ${formatCurrency(calculated)} / ${dUnit}`;
+    } else {
+      packPreview.style.display = 'none';
+    }
+  }
+
+  packQtyInput.addEventListener('input', recalculateFractionalCost);
+  packUnitSelect.addEventListener('change', recalculateFractionalCost);
+  packPriceInput.addEventListener('input', recalculateFractionalCost);
+
   function updateGramEqVisibility() {
     const unit = unitSelect.value;
     if (unit === 'g' || unit === 'kg') {
       gramEqGroup.style.display = 'none';
+      gramEqInput.disabled = true;
+      gramEqInput.value = '';
     } else {
       gramEqGroup.style.display = 'block';
+      gramEqInput.disabled = false;
     }
+    recalculateFractionalCost();
   }
   unitSelect.addEventListener('change', updateGramEqVisibility);
 
@@ -118,7 +179,10 @@ export async function renderIngredientsView(container: HTMLElement): Promise<voi
         <tr>
           <td><strong>${escapeHtml(item.name)}</strong></td>
           <td><span class="badge badge-slate">${item.defaultUnit}</span></td>
-          <td>${formatCurrency(item.costPerUnit)} / ${item.defaultUnit}</td>
+          <td>
+            <strong>${formatCurrency(item.costPerUnit)}</strong> / ${item.defaultUnit}
+            ${item.purchaseQuantity && item.purchasePrice ? `<div style="font-size: 0.75rem; color: var(--text-muted);">${item.purchaseQuantity}${item.purchaseUnit} pack @ ${formatCurrency(item.purchasePrice)}</div>` : ''}
+          </td>
           <td>${item.gramEquivalent ? `${item.gramEquivalent}g per ${item.defaultUnit}` : '—'}</td>
           <td style="text-align: right;">
             <button class="btn btn-secondary btn-sm btn-edit" data-id="${item.id}">Edit</button>
@@ -167,6 +231,9 @@ export async function renderIngredientsView(container: HTMLElement): Promise<voi
     form.reset();
     idInput.value = '';
     modalTitle.textContent = 'Add Ingredient';
+    packQtyInput.value = '';
+    packPriceInput.value = '';
+    packPreview.style.display = 'none';
     updateGramEqVisibility();
     modal.style.display = 'flex';
     nameInput.focus();
@@ -178,6 +245,16 @@ export async function renderIngredientsView(container: HTMLElement): Promise<voi
     unitSelect.value = item.defaultUnit;
     costInput.value = item.costPerUnit.toString();
     gramEqInput.value = item.gramEquivalent ? item.gramEquivalent.toString() : '';
+
+    packQtyInput.value = item.purchaseQuantity ? item.purchaseQuantity.toString() : '';
+    packUnitSelect.value = item.purchaseUnit || item.defaultUnit;
+    packPriceInput.value = item.purchasePrice ? item.purchasePrice.toString() : '';
+    if (item.purchaseQuantity && item.purchasePrice) {
+      recalculateFractionalCost();
+    } else {
+      packPreview.style.display = 'none';
+    }
+
     modalTitle.textContent = 'Edit Ingredient';
     updateGramEqVisibility();
     modal.style.display = 'flex';
@@ -197,8 +274,13 @@ export async function renderIngredientsView(container: HTMLElement): Promise<voi
     const id = idInput.value || `ing-${Date.now()}`;
     const name = nameInput.value.trim();
     const defaultUnit = unitSelect.value as UnitType;
+    const isWeight = defaultUnit === 'g' || defaultUnit === 'kg';
     const costPerUnit = parseFloat(costInput.value) || 0;
-    const gramEquivalent = gramEqInput.value ? parseFloat(gramEqInput.value) : undefined;
+    const gramEquivalent = !isWeight && gramEqInput.value ? parseFloat(gramEqInput.value) : undefined;
+
+    const purchaseQuantity = packQtyInput.value ? parseFloat(packQtyInput.value) : undefined;
+    const purchaseUnit = packQtyInput.value ? (packUnitSelect.value as UnitType) : undefined;
+    const purchasePrice = packPriceInput.value ? parseFloat(packPriceInput.value) : undefined;
 
     const newIng: CatalogIngredient = {
       id,
@@ -206,6 +288,9 @@ export async function renderIngredientsView(container: HTMLElement): Promise<voi
       defaultUnit,
       costPerUnit,
       gramEquivalent,
+      purchaseQuantity,
+      purchaseUnit,
+      purchasePrice,
       updatedAt: new Date().toISOString()
     };
 

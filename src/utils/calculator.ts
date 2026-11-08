@@ -51,6 +51,24 @@ export function convertCostUnit(
 }
 
 /**
+ * Calculates unit cost from a fractional / pack purchase.
+ * Example: 400 g costs ₹240, target unit is kg -> returns 600 (₹600/kg)
+ * Example: 400 g costs ₹240, target unit is g -> returns 0.6 (₹0.6/g)
+ */
+export function calculateFractionalCost(options: {
+  packQuantity: number;
+  packUnit: UnitType;
+  packPrice: number;
+  targetUnit: UnitType;
+}): number {
+  const { packQuantity, packUnit, packPrice, targetUnit } = options;
+  if (packQuantity <= 0 || packPrice < 0) return 0;
+  const rawCost = packPrice / packQuantity;
+  const converted = convertCostUnit(rawCost, packUnit, targetUnit);
+  return Math.round(converted * 10000) / 10000;
+}
+
+/**
  * Computes multiplier for recipe scaling given base output and target output.
  * Example: base recipe yields 1 kg, target is 3.5 kg -> multiplier is 3.5x.
  * Example: base recipe yields 12 pcs, target is 36 pcs -> multiplier is 3x.

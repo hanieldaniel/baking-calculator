@@ -6,6 +6,9 @@ export interface CatalogIngredient {
   defaultUnit: UnitType;
   costPerUnit: number; // cost in ₹ per defaultUnit (e.g. ₹ per kg, ₹ per g, ₹ per piece)
   gramEquivalent?: number; // for non-weight units (ml, l, pcs): equivalent weight in grams for 1 unit
+  purchaseQuantity?: number; // e.g. 400
+  purchaseUnit?: UnitType; // e.g. 'g'
+  purchasePrice?: number; // e.g. 240
   updatedAt: string;
 }
 
@@ -49,6 +52,7 @@ export interface OrderItem {
   totalCost: number;
   sellingPrice: number;
   unitPrice?: number;
+  soldAtPrice?: number; // Optional actual price charged
   bakeLossPercent?: number;
   targetWeightGrams?: number;
   targetUnits?: number;
@@ -67,12 +71,15 @@ export interface Order {
   title: string;
   customerName?: string;
   date: string;
+  deliveryDate?: string;
   items: OrderItem[];
   aggregatedIngredients: AggregatedIngredient[];
   totalIngredientCost: number;
   totalOverheadCost: number;
   totalCost: number;
   totalSellingPrice: number;
+  totalSoldAtPrice?: number; // Optional actual sold price
+  quotaDifference?: number; // totalSoldAtPrice - totalSellingPrice
   notes?: string;
 }
 

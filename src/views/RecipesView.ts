@@ -1,7 +1,7 @@
 import { dbService } from '../services/db';
 import { fileSyncService } from '../services/fileSync';
 import { Recipe, RecipeIngredientItem, UnitType } from '../types';
-import { calculateIngredientCost, calculateItemPricing, convertCostUnit } from '../utils/calculator';
+import { calculateIngredientCost, calculateItemPricing, convertCostUnit, calculateFractionalCost } from '../utils/calculator';
 import { formatCurrency, showToast, escapeHtml } from '../utils/ui';
 
 export async function renderRecipesView(container: HTMLElement): Promise<void> {
@@ -31,7 +31,7 @@ export async function renderRecipesView(container: HTMLElement): Promise<void> {
 
     <!-- Recipe Editor Modal -->
     <div id="recipe-modal" class="modal-overlay" style="display: none;">
-      <div class="modal-content" style="max-width: 850px;">
+      <div class="modal-content" style="max-width: 1020px; width: 95vw; padding: 2rem;">
         <div class="modal-header">
           <h2 id="modal-title" class="modal-title">New Recipe</h2>
           <button id="modal-close-btn" class="modal-close">&times;</button>
@@ -80,15 +80,23 @@ export async function renderRecipesView(container: HTMLElement): Promise<void> {
           </div>
 
           <div class="table-responsive" style="margin-bottom: 1rem;">
-            <table class="table" id="recipe-ingredients-table">
+            <table class="table" id="recipe-ingredients-table" style="table-layout: fixed; width: 100%;">
+              <colgroup>
+                <col style="width: 36%;">
+                <col style="width: 16%;">
+                <col style="width: 14%;">
+                <col style="width: 16%;">
+                <col style="width: 18%;">
+                <col style="width: 44px;">
+              </colgroup>
               <thead>
                 <tr>
-                  <th style="min-width: 180px;">Ingredient</th>
-                  <th style="width: 100px;">Qty</th>
-                  <th style="width: 90px;">Unit</th>
-                  <th style="width: 110px;">Cost (₹)/Unit</th>
-                  <th style="width: 90px;">Total (₹)</th>
-                  <th style="width: 40px;"></th>
+                  <th>Ingredient</th>
+                  <th>Qty</th>
+                  <th>Unit</th>
+                  <th>Cost (₹)/Unit</th>
+                  <th style="text-align: right;">Total (₹)</th>
+                  <th style="width: 44px; text-align: center;"></th>
                 </tr>
               </thead>
               <tbody id="recipe-ingredients-tbody">
@@ -121,6 +129,44 @@ export async function renderRecipesView(container: HTMLElement): Promise<void> {
         </form>
       </div>
     </div>
+
+    <!-- Mini Fractional Cost Modal for Recipes -->
+    <div id="recipe-pack-calc-modal" class="modal-overlay" style="display: none; z-index: 150;">
+      <div class="modal-content" style="max-width: 440px;">
+        <div class="modal-header">
+          <h3 id="pack-modal-title" style="font-size: 1.15rem; font-weight: 700;">Fractional / Pack Cost Calculator</h3>
+          <button id="pack-modal-close-btn" class="modal-close">&times;</button>
+        </div>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+          Enter the pack quantity and total purchase price (e.g. 400 gms costs ₹240).
+        </p>
+        <div class="form-row" style="margin-bottom: 1rem;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="recipe-pack-qty">Pack Quantity</label>
+            <input type="number" id="recipe-pack-qty" class="form-control" step="any" min="0.001" placeholder="e.g. 400" />
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="recipe-pack-unit">Pack Unit</label>
+            <select id="recipe-pack-unit" class="form-control">
+              <option value="g">g</option>
+              <option value="kg">kg</option>
+              <option value="ml">ml</option>
+              <option value="l">l</option>
+              <option value="pcs">pcs</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="recipe-pack-price">Total Pack Price (₹)</label>
+          <input type="number" id="recipe-pack-price" class="form-control" step="any" min="0" placeholder="e.g. 240" />
+        </div>
+        <div id="recipe-pack-result" style="font-size: 0.9rem; font-weight: 700; color: #166534; background: #f0fdf4; border: 1px solid #bbf7d0; padding: 0.5rem 0.75rem; border-radius: var(--radius); margin-bottom: 1rem; display: none;"></div>
+        <div style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+          <button type="button" id="recipe-pack-cancel" class="btn btn-secondary">Cancel</button>
+          <button type="button" id="recipe-pack-apply" class="btn btn-primary">Apply Unit Cost</button>
+        </div>
+      </div>
+    </div>
   `;
 
   const listContainer = container.querySelector('#recipes-list') as HTMLElement;
@@ -142,6 +188,74 @@ export async function renderRecipesView(container: HTMLElement): Promise<void> {
   const summaryIngCost = container.querySelector('#summary-ing-cost') as HTMLElement;
 
   let currentIngredients: RecipeIngredientItem[] = [];
+
+  // Pack Calculator Modal elements
+  const packModal = container.querySelector('#recipe-pack-calc-modal') as HTMLElement;
+  const packModalTitle = container.querySelector('#pack-modal-title') as HTMLElement;
+  const packQtyIn = container.querySelector('#recipe-pack-qty') as HTMLInputElement;
+  const packUnitIn = container.querySelector('#recipe-pack-unit') as HTMLSelectElement;
+  const packPriceIn = container.querySelector('#recipe-pack-price') as HTMLInputElement;
+  const packResultEl = container.querySelector('#recipe-pack-result') as HTMLElement;
+  const packApplyBtn = container.querySelector('#recipe-pack-apply') as HTMLButtonElement;
+  const packCancelBtn = container.querySelector('#recipe-pack-cancel') as HTMLButtonElement;
+  const packCloseBtn = container.querySelector('#pack-modal-close-btn') as HTMLButtonElement;
+
+  let onApplyCallback: ((cost: number) => void) | null = null;
+  let calculatedPackCost = 0;
+
+  function updatePackPreview(targetUnit: UnitType) {
+    const qty = parseFloat(packQtyIn.value);
+    const price = parseFloat(packPriceIn.value);
+    const pUnit = packUnitIn.value as UnitType;
+
+    if (qty > 0 && price >= 0) {
+      calculatedPackCost = calculateFractionalCost({
+        packQuantity: qty,
+        packUnit: pUnit,
+        packPrice: price,
+        targetUnit
+      });
+      packResultEl.style.display = 'block';
+      packResultEl.textContent = `✓ Result: ${qty} ${pUnit} @ ₹${price} = ${formatCurrency(calculatedPackCost)} / ${targetUnit}`;
+    } else {
+      packResultEl.style.display = 'none';
+      calculatedPackCost = 0;
+    }
+  }
+
+  function openPackCalculator(item: RecipeIngredientItem, onApply: (cost: number) => void) {
+    onApplyCallback = onApply;
+    packModalTitle.textContent = item.name ? `Pack Cost: ${item.name}` : 'Fractional Cost Calculator';
+    packQtyIn.value = '';
+    packUnitIn.value = item.unit || 'g';
+    packPriceIn.value = '';
+    packResultEl.style.display = 'none';
+    calculatedPackCost = 0;
+
+    packQtyIn.oninput = () => updatePackPreview(item.unit);
+    packUnitIn.onchange = () => updatePackPreview(item.unit);
+    packPriceIn.oninput = () => updatePackPreview(item.unit);
+
+    packModal.style.display = 'flex';
+    packQtyIn.focus();
+  }
+
+  function closePackCalculator() {
+    packModal.style.display = 'none';
+    onApplyCallback = null;
+  }
+
+  packCancelBtn?.addEventListener('click', closePackCalculator);
+  packCloseBtn?.addEventListener('click', closePackCalculator);
+
+  packApplyBtn?.addEventListener('click', () => {
+    if (calculatedPackCost > 0 && onApplyCallback) {
+      onApplyCallback(calculatedPackCost);
+      closePackCalculator();
+    } else {
+      alert('Please enter a valid pack quantity and price.');
+    }
+  });
 
   function recalculateTotalIngCost() {
     const total = currentIngredients.reduce((acc, item) => acc + calculateIngredientCost(item), 0);
@@ -174,13 +288,16 @@ export async function renderRecipesView(container: HTMLElement): Promise<void> {
           </select>
         </td>
         <td>
-          <input type="number" class="form-control ing-cost" step="0.001" min="0" value="${item.costPerUnit}" />
+          <div style="display: flex; gap: 0.25rem; align-items: center;">
+            <input type="number" class="form-control ing-cost" step="any" min="0" value="${item.costPerUnit}" />
+            <button type="button" class="btn btn-secondary btn-sm ing-pack-btn" title="Calculate fractional/pack cost (e.g. 400g = ₹240)" style="padding: 0.25rem 0.4rem; font-size: 0.8rem; flex-shrink: 0;">📦</button>
+          </div>
         </td>
-        <td class="ing-row-total" style="font-weight: 600;">
+        <td class="ing-row-total" style="font-weight: 600; text-align: right; white-space: nowrap;">
           ${formatCurrency(rowCost)}
         </td>
-        <td>
-          <button type="button" class="btn btn-danger btn-sm ing-remove" title="Remove">&times;</button>
+        <td style="text-align: center;">
+          <button type="button" class="btn btn-danger btn-sm ing-remove" title="Remove" style="padding: 0.25rem 0.5rem;">&times;</button>
         </td>
       `;
 
@@ -227,6 +344,16 @@ export async function renderRecipesView(container: HTMLElement): Promise<void> {
         item.costPerUnit = parseFloat(costEl.value) || 0;
         rowTotalEl.textContent = formatCurrency(calculateIngredientCost(item));
         recalculateTotalIngCost();
+      });
+
+      const packBtn = tr.querySelector('.ing-pack-btn') as HTMLButtonElement;
+      packBtn?.addEventListener('click', () => {
+        openPackCalculator(item, (newCost) => {
+          item.costPerUnit = newCost;
+          costEl.value = newCost.toString();
+          rowTotalEl.textContent = formatCurrency(calculateIngredientCost(item));
+          recalculateTotalIngCost();
+        });
       });
 
       removeBtn.addEventListener('click', () => {

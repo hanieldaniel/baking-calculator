@@ -6,7 +6,8 @@ import {
   scaleIngredients,
   calculateItemPricing,
   aggregateOrderIngredients,
-  convertCostUnit
+  convertCostUnit,
+  calculateFractionalCost
 } from './calculator';
 import { RecipeIngredientItem, OrderItem } from '../types';
 
@@ -117,5 +118,36 @@ describe('Calculator Utility Math', () => {
     expect(convertCostUnit(60, 'kg', 'g')).toBe(0.06);
     expect(convertCostUnit(0.06, 'g', 'kg')).toBe(60);
     expect(convertCostUnit(100, 'l', 'ml')).toBe(0.1);
+  });
+
+  it('calculates fractional pack cost accurately', () => {
+    // 400 gms costs ₹240 -> unit cost in g is ₹0.6/g, unit cost in kg is ₹600/kg
+    expect(
+      calculateFractionalCost({
+        packQuantity: 400,
+        packUnit: 'g',
+        packPrice: 240,
+        targetUnit: 'g'
+      })
+    ).toBe(0.6);
+
+    expect(
+      calculateFractionalCost({
+        packQuantity: 400,
+        packUnit: 'g',
+        packPrice: 240,
+        targetUnit: 'kg'
+      })
+    ).toBe(600);
+
+    // 25 kg sack costs ₹1000 -> in g is ₹0.04/g
+    expect(
+      calculateFractionalCost({
+        packQuantity: 25,
+        packUnit: 'kg',
+        packPrice: 1000,
+        targetUnit: 'g'
+      })
+    ).toBe(0.04);
   });
 });

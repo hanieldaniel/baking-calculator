@@ -16,6 +16,7 @@ interface ActiveBatchItem {
   targetOutputValue: number;
   overheadCost: number;
   markupPercent: number;
+  soldAtPrice?: number;
 }
 
 export async function renderCalculatorView(container: HTMLElement): Promise<void> {
@@ -105,12 +106,29 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
           <strong id="order-total-cost">₹0.00</strong>
         </div>
         <div class="summary-row">
-          <span>Profit Margin:</span>
+          <span>Target Profit Margin:</span>
           <strong id="order-total-profit" style="color: #16a34a;">₹0.00 (0%)</strong>
         </div>
-        <div class="summary-row total" style="color: #14532d; border-color: #86efac; font-size: 1.35rem;">
-          <span>FINAL SELLING PRICE:</span>
+        <div class="summary-row total" style="color: #14532d; border-color: #86efac; font-size: 1.25rem;">
+          <span>CALCULATED TARGET PRICE:</span>
           <span id="order-final-price">₹0.00</span>
+        </div>
+
+        <!-- Optional Sold At Price input -->
+        <div class="summary-row" style="align-items: center; padding-top: 0.75rem; margin-top: 0.5rem; border-top: 1px dashed #bbf7d0;">
+          <div>
+            <span style="font-weight: 700; color: #166534; font-size: 0.95rem;">Sold At Price (₹) (Optional):</span>
+            <div style="font-size: 0.75rem; color: #4b5563;">Enter actual price charged to compare with target</div>
+          </div>
+          <div style="max-width: 180px;">
+            <input type="number" id="order-sold-at-price" class="form-control" step="any" min="0" placeholder="Optional" style="font-weight: 700; text-align: right; font-size: 1.05rem;" />
+          </div>
+        </div>
+
+        <!-- Target Comparison Row -->
+        <div id="quota-comparison-row" class="summary-row" style="display: none; padding-top: 0.6rem; margin-top: 0.4rem; border-top: 1px solid #bbf7d0; font-size: 0.95rem; align-items: center;">
+          <span style="font-weight: 700;">Target Comparison:</span>
+          <div id="quota-badge" style="font-weight: 700; text-align: right;"></div>
         </div>
       </div>
 
@@ -142,173 +160,113 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
   const orderTotalProfitEl = container.querySelector('#order-total-profit') as HTMLElement;
   const orderFinalPriceEl = container.querySelector('#order-final-price') as HTMLElement;
 
+  const orderSoldAtPriceInput = container.querySelector('#order-sold-at-price') as HTMLInputElement;
+  const quotaComparisonRow = container.querySelector('#quota-comparison-row') as HTMLElement;
+  const quotaBadge = container.querySelector('#quota-badge') as HTMLElement;
+
   const orderTitleInput = container.querySelector('#order-title') as HTMLInputElement;
   const btnSaveOrder = container.querySelector('#btn-save-order') as HTMLButtonElement;
   const btnPrintOrder = container.querySelector('#btn-print-order') as HTMLButtonElement;
 
-  function renderBatch() {
-    if (activeBatch.length === 0) {
-      itemsContainer.innerHTML = `
-        <div class="card" style="text-align: center; padding: 3rem; color: var(--text-muted);">
-          No recipes added yet. Select a recipe from the dropdown above to calculate.
-        </div>
-      `;
-      summaryCard.style.display = 'none';
-      return;
+  function calculateSingleItem(item: ActiveBatchItem): OrderItem {
+    const baseOutput = item.recipe.outputValue ?? 1;
+    const outputUnit = item.recipe.outputUnit ?? 'kg';
+    const scaleMultiplier = calculateScaleMultiplier(baseOutput, item.targetOutputValue);
+    const scaledIngredients = scaleIngredients(item.recipe.ingredients, scaleMultiplier);
+    const pricing = calculateItemPricing({
+      scaledIngredients,
+      overheadCost: item.overheadCost,
+      markupPercent: item.markupPercent,
+      targetUnits: outputUnit === 'pcs' ? item.targetOutputValue : undefined
+    });
+
+    return {
+      recipeId: item.recipe.id,
+      recipeName: item.recipe.name,
+      outputValue: item.targetOutputValue,
+      outputUnit,
+      scaleMultiplier,
+      scaledIngredients,
+      ingredientCost: pricing.ingredientCost,
+      overheadCost: pricing.overheadCost,
+      markupPercent: item.markupPercent,
+      totalCost: pricing.totalCost,
+      sellingPrice: pricing.sellingPrice,
+      unitPrice: pricing.unitPrice,
+      soldAtPrice: item.soldAtPrice
+    };
+  }
+
+  function updateCardCalculations(card: HTMLElement, item: ActiveBatchItem) {
+    const calculated = calculateSingleItem(item);
+    const outputUnit = item.recipe.outputUnit ?? 'kg';
+
+    const multiplierEl = card.querySelector('.item-multiplier') as HTMLElement;
+    if (multiplierEl) multiplierEl.textContent = `${calculated.scaleMultiplier.toFixed(2)}x`;
+
+    const headingEl = card.querySelector('.item-ingredients-heading') as HTMLElement;
+    if (headingEl) {
+      headingEl.textContent = `⚖️ Ingredients to be Added (${item.targetOutputValue} ${outputUnit})`;
     }
 
-    summaryCard.style.display = 'block';
-    itemsContainer.innerHTML = '';
+    const tbody = card.querySelector('.item-ingredients-tbody') as HTMLElement;
+    if (tbody) {
+      tbody.innerHTML = calculated.scaledIngredients
+        .map(
+          (ing) => `
+        <tr>
+          <td><strong>${escapeHtml(ing.name)}</strong></td>
+          <td><strong style="color: #0f172a; font-size: 0.98rem;">${ing.quantity}</strong></td>
+          <td><span class="badge badge-slate">${ing.unit}</span></td>
+          <td>${formatCurrency(ing.costPerUnit)}</td>
+          <td style="text-align: right; font-weight: 600;">${formatCurrency(calculateIngredientCost(ing))}</td>
+        </tr>
+      `
+        )
+        .join('');
+    }
 
-    const calculatedOrderItems: OrderItem[] = [];
+    const ingCostEl = card.querySelector('.item-ing-cost') as HTMLElement;
+    if (ingCostEl) ingCostEl.textContent = formatCurrency(calculated.ingredientCost);
 
-    activeBatch.forEach((item, index) => {
-      const baseOutput = item.recipe.outputValue ?? 1;
-      const outputUnit = item.recipe.outputUnit ?? 'kg';
+    const priceEl = card.querySelector('.item-selling-price') as HTMLElement;
+    if (priceEl) priceEl.textContent = formatCurrency(calculated.sellingPrice);
 
-      const scaleMultiplier = calculateScaleMultiplier(baseOutput, item.targetOutputValue);
-      const scaledIngredients = scaleIngredients(item.recipe.ingredients, scaleMultiplier);
+    const unitPriceEl = card.querySelector('.item-unit-price-desc') as HTMLElement;
+    if (unitPriceEl) {
+      if (outputUnit === 'pcs' && calculated.unitPrice) {
+        unitPriceEl.textContent = `${formatCurrency(calculated.unitPrice)} per piece`;
+        unitPriceEl.style.display = 'inline';
+      } else if (outputUnit === 'kg' && item.targetOutputValue > 0) {
+        unitPriceEl.textContent = `${formatCurrency(calculated.sellingPrice / item.targetOutputValue)} / kg`;
+        unitPriceEl.style.display = 'inline';
+      } else {
+        unitPriceEl.style.display = 'none';
+      }
+    }
 
-      const pricing = calculateItemPricing({
-        scaledIngredients,
-        overheadCost: item.overheadCost,
-        markupPercent: item.markupPercent,
-        targetUnits: outputUnit === 'pcs' ? item.targetOutputValue : undefined
-      });
+    // Quota status on the recipe card
+    const quotaStatusEl = card.querySelector('.item-quota-status') as HTMLElement;
+    if (quotaStatusEl) {
+      if (typeof item.soldAtPrice === 'number' && item.soldAtPrice > 0) {
+        const diff = Math.round((item.soldAtPrice - calculated.sellingPrice) * 100) / 100;
+        const pct = calculated.sellingPrice > 0 ? Math.round((diff / calculated.sellingPrice) * 100) : 0;
+        quotaStatusEl.style.display = 'block';
+        if (diff >= 0) {
+          quotaStatusEl.style.color = '#15803d';
+          quotaStatusEl.textContent = `✓ +${formatCurrency(diff)} (+${pct}%) Target Met`;
+        } else {
+          quotaStatusEl.style.color = '#b91c1c';
+          quotaStatusEl.textContent = `⚠️ -${formatCurrency(Math.abs(diff))} (${pct}%) Below Target`;
+        }
+      } else {
+        quotaStatusEl.style.display = 'none';
+      }
+    }
+  }
 
-      const orderItem: OrderItem = {
-        recipeId: item.recipe.id,
-        recipeName: item.recipe.name,
-        outputValue: item.targetOutputValue,
-        outputUnit,
-        scaleMultiplier,
-        scaledIngredients,
-        ingredientCost: pricing.ingredientCost,
-        overheadCost: pricing.overheadCost,
-        markupPercent: item.markupPercent,
-        totalCost: pricing.totalCost,
-        sellingPrice: pricing.sellingPrice,
-        unitPrice: pricing.unitPrice
-      };
-      calculatedOrderItems.push(orderItem);
-
-      const card = document.createElement('div');
-      card.className = 'card';
-      card.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem; margin-bottom: 1rem;">
-          <div>
-            <h3 style="font-size: 1.25rem; font-weight: 700; color: #0f172a;">${escapeHtml(item.recipe.name)}</h3>
-            <span style="font-size: 0.85rem; color: var(--text-muted);">
-              Base recipe yields: <strong>${baseOutput} ${outputUnit}</strong>
-            </span>
-          </div>
-          <button type="button" class="btn btn-danger btn-sm btn-remove-item" title="Remove">&times; Remove</button>
-        </div>
-
-        <!-- Expected Output Input -->
-        <div class="form-row" style="background: #f8fafc; padding: 1rem; border-radius: var(--radius); margin-bottom: 1rem; align-items: center;">
-          <div class="form-group" style="margin-bottom: 0; flex: 2;">
-            <label class="form-label" style="font-size: 0.95rem; font-weight: 700; color: #0f172a;">
-              Expected Output (${outputUnit === 'kg' ? 'Kgs' : 'Pieces'}) *
-            </label>
-            <input type="number" class="form-control item-target-output" step="any" min="0.01" value="${item.targetOutputValue}" style="font-size: 1.1rem; font-weight: 600;" />
-          </div>
-
-          <div class="form-group" style="margin-bottom: 0; flex: 1;">
-            <label class="form-label">Scale Multiplier</label>
-            <div style="padding: 0.55rem 0.8rem; background: #ffffff; border: 1px solid var(--border); border-radius: var(--radius); font-weight: 700; color: var(--primary); font-size: 1.1rem;">
-              ${scaleMultiplier.toFixed(2)}x
-            </div>
-          </div>
-        </div>
-
-        <!-- Ingredients Table to be added -->
-        <h4 style="font-size: 0.95rem; font-weight: 600; color: #475569; margin-bottom: 0.5rem;">
-          ⚖️ Ingredients to be Added (${item.targetOutputValue} ${outputUnit})
-        </h4>
-        <div class="table-responsive" style="margin-bottom: 1rem;">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Ingredient</th>
-                <th>Quantity to Add</th>
-                <th>Unit</th>
-                <th>Cost (₹)/Unit</th>
-                <th style="text-align: right;">Total Cost (₹)</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${scaledIngredients
-                .map(
-                  (ing) => `
-                <tr>
-                  <td><strong>${escapeHtml(ing.name)}</strong></td>
-                  <td><strong style="color: #0f172a; font-size: 0.98rem;">${ing.quantity}</strong></td>
-                  <td><span class="badge badge-slate">${ing.unit}</span></td>
-                  <td>${formatCurrency(ing.costPerUnit)}</td>
-                  <td style="text-align: right; font-weight: 600;">${formatCurrency(calculateIngredientCost(ing))}</td>
-                </tr>
-              `
-                )
-                .join('')}
-            </tbody>
-          </table>
-        </div>
-
-        <!-- Pricing Controls -->
-        <div class="form-row" style="background: #fffbeb; padding: 1rem; border-radius: var(--radius); border: 1px solid #fef3c7;">
-          <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label">Ingredient Cost</label>
-            <div style="font-size: 1.15rem; font-weight: 700; color: #92400e; padding-top: 0.2rem;">
-              ${formatCurrency(pricing.ingredientCost)}
-            </div>
-          </div>
-          <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label">Labor / Overhead (₹)</label>
-            <input type="number" class="form-control item-overhead" step="5" min="0" value="${item.overheadCost}" />
-          </div>
-          <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label">Profit Markup (%)</label>
-            <input type="number" class="form-control item-markup" step="5" min="0" value="${item.markupPercent}" />
-          </div>
-          <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label">Calculated Price</label>
-            <div style="font-size: 1.3rem; font-weight: 700; color: var(--primary-dark); padding-top: 0.15rem;">
-              ${formatCurrency(pricing.sellingPrice)}
-            </div>
-            ${outputUnit === 'pcs' && pricing.unitPrice ? `<span style="font-size: 0.8rem; color: var(--text-muted);">${formatCurrency(pricing.unitPrice)} per piece</span>` : ''}
-            ${outputUnit === 'kg' && item.targetOutputValue > 0 ? `<span style="font-size: 0.8rem; color: var(--text-muted);">${formatCurrency(pricing.sellingPrice / item.targetOutputValue)} / kg</span>` : ''}
-          </div>
-        </div>
-      `;
-
-      const targetOutputInput = card.querySelector('.item-target-output') as HTMLInputElement;
-      const overheadIn = card.querySelector('.item-overhead') as HTMLInputElement;
-      const markupIn = card.querySelector('.item-markup') as HTMLInputElement;
-      const removeBtn = card.querySelector('.btn-remove-item') as HTMLButtonElement;
-
-      targetOutputInput?.addEventListener('input', () => {
-        item.targetOutputValue = parseFloat(targetOutputInput.value) || 0;
-        renderBatch();
-      });
-
-      overheadIn.addEventListener('input', () => {
-        item.overheadCost = parseFloat(overheadIn.value) || 0;
-        renderBatch();
-      });
-
-      markupIn.addEventListener('input', () => {
-        item.markupPercent = parseFloat(markupIn.value) || 0;
-        renderBatch();
-      });
-
-      removeBtn.addEventListener('click', () => {
-        activeBatch.splice(index, 1);
-        renderBatch();
-      });
-
-      itemsContainer.appendChild(card);
-    });
+  function updateOrderSummary() {
+    const calculatedOrderItems = activeBatch.map(calculateSingleItem);
 
     const aggregated = aggregateOrderIngredients(calculatedOrderItems);
     aggregatedTbody.innerHTML = aggregated
@@ -335,6 +293,217 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
     orderTotalCostEl.textContent = formatCurrency(totalCost);
     orderTotalProfitEl.textContent = `${formatCurrency(profitAmount)} (${profitPercent}%)`;
     orderFinalPriceEl.textContent = formatCurrency(finalPrice);
+
+    // Quota comparison check
+    const getItemEffectiveSold = (i: OrderItem) =>
+      typeof i.soldAtPrice === 'number' && i.soldAtPrice > 0 ? i.soldAtPrice : i.sellingPrice;
+
+    const itemsSoldSum = Math.round(
+      calculatedOrderItems.reduce((acc, i) => acc + getItemEffectiveSold(i), 0) * 100
+    ) / 100;
+
+    const hasAnyCustomSoldPrice = calculatedOrderItems.some(
+      (i) => typeof i.soldAtPrice === 'number' && i.soldAtPrice > 0
+    );
+
+    // If user is not currently typing in orderSoldAtPriceInput, auto-sync value from items
+    if (orderSoldAtPriceInput && document.activeElement !== orderSoldAtPriceInput) {
+      if (hasAnyCustomSoldPrice) {
+        orderSoldAtPriceInput.value = itemsSoldSum.toString();
+      } else {
+        orderSoldAtPriceInput.value = '';
+        orderSoldAtPriceInput.placeholder = `Calculated: ${formatCurrency(finalPrice)}`;
+      }
+    }
+
+    const manualOrderSoldPrice = orderSoldAtPriceInput && orderSoldAtPriceInput.value ? parseFloat(orderSoldAtPriceInput.value) : undefined;
+    const effectiveSoldPrice = manualOrderSoldPrice ?? (hasAnyCustomSoldPrice ? itemsSoldSum : undefined);
+
+    if (effectiveSoldPrice !== undefined && effectiveSoldPrice > 0) {
+      const diff = Math.round((effectiveSoldPrice - finalPrice) * 100) / 100;
+      const pct = finalPrice > 0 ? Math.round((diff / finalPrice) * 100) : 0;
+      const actualProfit = Math.round((effectiveSoldPrice - totalCost) * 100) / 100;
+      const actualMarginPct = totalCost > 0 ? Math.round((actualProfit / totalCost) * 100) : 0;
+
+      quotaComparisonRow.style.display = 'flex';
+      if (diff >= 0) {
+        quotaBadge.innerHTML = `
+          <div style="display: inline-block; background: #dcfce7; color: #15803d; padding: 0.2rem 0.6rem; border-radius: 9999px;">
+            ✓ Target Met: +${formatCurrency(diff)} (+${pct}%)
+          </div>
+          <div style="font-size: 0.8rem; font-weight: 500; color: #166534; margin-top: 0.25rem;">
+            Actual Profit: ${formatCurrency(actualProfit)} (${actualMarginPct}%)
+          </div>
+        `;
+      } else {
+        quotaBadge.innerHTML = `
+          <div style="display: inline-block; background: #fee2e2; color: #b91c1c; padding: 0.2rem 0.6rem; border-radius: 9999px;">
+            ⚠️ Below Target: -${formatCurrency(Math.abs(diff))} (${pct}%)
+          </div>
+          <div style="font-size: 0.8rem; font-weight: 500; color: #991b1b; margin-top: 0.25rem;">
+            Actual Profit: ${formatCurrency(actualProfit)} (${actualMarginPct}%)
+          </div>
+        `;
+      }
+    } else {
+      quotaComparisonRow.style.display = 'none';
+    }
+  }
+
+  orderSoldAtPriceInput?.addEventListener('input', () => {
+    updateOrderSummary();
+  });
+
+  function renderBatchStructure() {
+    if (activeBatch.length === 0) {
+      itemsContainer.innerHTML = `
+        <div class="card" style="text-align: center; padding: 3rem; color: var(--text-muted);">
+          No recipes added yet. Select a recipe from the dropdown above to calculate.
+        </div>
+      `;
+      summaryCard.style.display = 'none';
+      return;
+    }
+
+    summaryCard.style.display = 'block';
+    itemsContainer.innerHTML = '';
+
+    activeBatch.forEach((item, index) => {
+      const baseOutput = item.recipe.outputValue ?? 1;
+      const outputUnit = item.recipe.outputUnit ?? 'kg';
+
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.dataset.itemId = item.id;
+
+      card.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem; margin-bottom: 1rem;">
+          <div>
+            <h3 style="font-size: 1.25rem; font-weight: 700; color: #0f172a;">${escapeHtml(item.recipe.name)}</h3>
+            <span style="font-size: 0.85rem; color: var(--text-muted);">
+              Base recipe yields: <strong>${baseOutput} ${outputUnit}</strong>
+            </span>
+          </div>
+          <button type="button" class="btn btn-danger btn-sm btn-remove-item" title="Remove">&times; Remove</button>
+        </div>
+
+        <!-- Expected Output Input -->
+        <div class="form-row" style="background: #f8fafc; padding: 1rem; border-radius: var(--radius); margin-bottom: 1rem; align-items: center;">
+          <div class="form-group" style="margin-bottom: 0; flex: 2;">
+            <label class="form-label" style="font-size: 0.95rem; font-weight: 700; color: #0f172a;">
+              Expected Output (${outputUnit === 'kg' ? 'Kgs' : 'Pieces'}) *
+            </label>
+            <input type="number" class="form-control item-target-output" step="any" min="0.01" value="${item.targetOutputValue}" style="font-size: 1.1rem; font-weight: 600;" />
+          </div>
+
+          <div class="form-group" style="margin-bottom: 0; flex: 1;">
+            <label class="form-label">Scale Multiplier</label>
+            <div class="item-multiplier" style="padding: 0.55rem 0.8rem; background: #ffffff; border: 1px solid var(--border); border-radius: var(--radius); font-weight: 700; color: var(--primary); font-size: 1.1rem;">
+              1.00x
+            </div>
+          </div>
+        </div>
+
+        <!-- Ingredients Table to be added -->
+        <h4 class="item-ingredients-heading" style="font-size: 0.95rem; font-weight: 600; color: #475569; margin-bottom: 0.5rem;">
+          ⚖️ Ingredients to be Added (${item.targetOutputValue} ${outputUnit})
+        </h4>
+        <div class="table-responsive" style="margin-bottom: 1rem;">
+          <table class="table" style="table-layout: fixed; width: 100%;">
+            <colgroup>
+              <col style="width: 38%;">
+              <col style="width: 18%;">
+              <col style="width: 14%;">
+              <col style="width: 15%;">
+              <col style="width: 15%;">
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Ingredient</th>
+                <th>Quantity to Add</th>
+                <th>Unit</th>
+                <th>Cost (₹)/Unit</th>
+                <th style="text-align: right;">Total Cost (₹)</th>
+              </tr>
+            </thead>
+            <tbody class="item-ingredients-tbody">
+              <!-- dynamic rows -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Pricing Controls -->
+        <div class="form-row" style="background: #fffbeb; padding: 1rem; border-radius: var(--radius); border: 1px solid #fef3c7;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Ingredient Cost</label>
+            <div class="item-ing-cost" style="font-size: 1.15rem; font-weight: 700; color: #92400e; padding-top: 0.2rem;">
+              ₹0.00
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Labor / Overhead (₹)</label>
+            <input type="number" class="form-control item-overhead" step="5" min="0" value="${item.overheadCost}" />
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Profit Markup (%)</label>
+            <input type="number" class="form-control item-markup" step="5" min="0" value="${item.markupPercent}" />
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Target Price</label>
+            <div class="item-selling-price" style="font-size: 1.3rem; font-weight: 700; color: var(--primary-dark); padding-top: 0.15rem;">
+              ₹0.00
+            </div>
+            <span class="item-unit-price-desc" style="font-size: 0.8rem; color: var(--text-muted);"></span>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Sold At Price (₹) (Optional)</label>
+            <input type="number" class="form-control item-sold-at" step="any" min="0" placeholder="Optional" value="${item.soldAtPrice ?? ''}" />
+            <div class="item-quota-status" style="font-size: 0.75rem; font-weight: 700; margin-top: 0.2rem; display: none;"></div>
+          </div>
+        </div>
+      `;
+
+      const targetOutputInput = card.querySelector('.item-target-output') as HTMLInputElement;
+      const overheadIn = card.querySelector('.item-overhead') as HTMLInputElement;
+      const markupIn = card.querySelector('.item-markup') as HTMLInputElement;
+      const soldAtIn = card.querySelector('.item-sold-at') as HTMLInputElement;
+      const removeBtn = card.querySelector('.btn-remove-item') as HTMLButtonElement;
+
+      targetOutputInput?.addEventListener('input', () => {
+        item.targetOutputValue = parseFloat(targetOutputInput.value) || 0;
+        updateCardCalculations(card, item);
+        updateOrderSummary();
+      });
+
+      overheadIn.addEventListener('input', () => {
+        item.overheadCost = parseFloat(overheadIn.value) || 0;
+        updateCardCalculations(card, item);
+        updateOrderSummary();
+      });
+
+      markupIn.addEventListener('input', () => {
+        item.markupPercent = parseFloat(markupIn.value) || 0;
+        updateCardCalculations(card, item);
+        updateOrderSummary();
+      });
+
+      soldAtIn?.addEventListener('input', () => {
+        const val = parseFloat(soldAtIn.value);
+        item.soldAtPrice = !isNaN(val) && val > 0 ? val : undefined;
+        updateCardCalculations(card, item);
+        updateOrderSummary();
+      });
+
+      removeBtn.addEventListener('click', () => {
+        activeBatch.splice(index, 1);
+        renderBatchStructure();
+      });
+
+      updateCardCalculations(card, item);
+      itemsContainer.appendChild(card);
+    });
+
+    updateOrderSummary();
   }
 
   selectAddRecipe.addEventListener('change', () => {
@@ -344,14 +513,14 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
     if (found) {
       addRecipeToBatch(found);
       selectAddRecipe.value = '';
-      renderBatch();
+      renderBatchStructure();
     }
   });
 
   btnClearBatch.addEventListener('click', () => {
     if (activeBatch.length > 0 && confirm('Clear all items from this calculation?')) {
       activeBatch.length = 0;
-      renderBatch();
+      renderBatchStructure();
     }
   });
 
@@ -361,39 +530,22 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
       return;
     }
 
-    const calculatedOrderItems: OrderItem[] = activeBatch.map((item) => {
-      const baseOutput = item.recipe.outputValue ?? 1;
-      const outputUnit = item.recipe.outputUnit ?? 'kg';
-      const scaleMultiplier = calculateScaleMultiplier(baseOutput, item.targetOutputValue);
-      const scaledIngredients = scaleIngredients(item.recipe.ingredients, scaleMultiplier);
-      const pricing = calculateItemPricing({
-        scaledIngredients,
-        overheadCost: item.overheadCost,
-        markupPercent: item.markupPercent,
-        targetUnits: outputUnit === 'pcs' ? item.targetOutputValue : undefined
-      });
-
-      return {
-        recipeId: item.recipe.id,
-        recipeName: item.recipe.name,
-        outputValue: item.targetOutputValue,
-        outputUnit,
-        scaleMultiplier,
-        scaledIngredients,
-        ingredientCost: pricing.ingredientCost,
-        overheadCost: pricing.overheadCost,
-        markupPercent: item.markupPercent,
-        totalCost: pricing.totalCost,
-        sellingPrice: pricing.sellingPrice,
-        unitPrice: pricing.unitPrice
-      };
-    });
-
+    const calculatedOrderItems = activeBatch.map(calculateSingleItem);
     const aggregated = aggregateOrderIngredients(calculatedOrderItems);
     const totalIngCost = calculatedOrderItems.reduce((acc, i) => acc + i.ingredientCost, 0);
     const totalOverhead = calculatedOrderItems.reduce((acc, i) => acc + i.overheadCost, 0);
     const totalCost = Math.round((totalIngCost + totalOverhead) * 100) / 100;
     const finalPrice = Math.round(calculatedOrderItems.reduce((acc, i) => acc + i.sellingPrice, 0) * 100) / 100;
+
+    const getItemEffectiveSold = (i: OrderItem) =>
+      typeof i.soldAtPrice === 'number' && i.soldAtPrice > 0 ? i.soldAtPrice : i.sellingPrice;
+    const itemsSoldSum = Math.round(
+      calculatedOrderItems.reduce((acc, i) => acc + getItemEffectiveSold(i), 0) * 100
+    ) / 100;
+    const hasItemSold = calculatedOrderItems.some((i) => typeof i.soldAtPrice === 'number' && i.soldAtPrice > 0);
+    const manualSoldAt = orderSoldAtPriceInput && orderSoldAtPriceInput.value ? parseFloat(orderSoldAtPriceInput.value) : undefined;
+    const effectiveSoldAtPrice = manualSoldAt ?? (hasItemSold ? itemsSoldSum : undefined);
+    const quotaDifference = effectiveSoldAtPrice !== undefined ? Math.round((effectiveSoldAtPrice - finalPrice) * 100) / 100 : undefined;
 
     const dateStr = new Date().toISOString();
     const orderNum = `ORD-${Date.now().toString().slice(-6)}`;
@@ -410,7 +562,9 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
       totalIngredientCost: totalIngCost,
       totalOverheadCost: totalOverhead,
       totalCost,
-      totalSellingPrice: finalPrice
+      totalSellingPrice: finalPrice,
+      totalSoldAtPrice: effectiveSoldAtPrice,
+      quotaDifference
     };
 
     await dbService.saveOrder(newOrder);
@@ -424,5 +578,5 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
     window.print();
   });
 
-  renderBatch();
+  renderBatchStructure();
 }

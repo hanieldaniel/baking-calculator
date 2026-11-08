@@ -47,6 +47,8 @@ export async function renderHistoryView(container: HTMLElement): Promise<void> {
         });
 
         const recipesSummary = order.items.map((i) => `${i.recipeName} (${i.scaleMultiplier.toFixed(2)}x)`).join(', ');
+        const quotaDiff = order.quotaDifference;
+        const hasQuota = typeof quotaDiff === 'number';
 
         return `
           <div class="card order-card" style="margin: 0;">
@@ -64,8 +66,19 @@ export async function renderHistoryView(container: HTMLElement): Promise<void> {
                 </div>
               </div>
               <div style="text-align: right;">
-                <div style="font-size: 1.35rem; font-weight: 700; color: var(--primary-dark);">${formatCurrency(order.totalSellingPrice)}</div>
-                <div style="font-size: 0.78rem; color: var(--text-muted);">Total Order Price</div>
+                <div style="font-size: 1.35rem; font-weight: 700; color: var(--primary-dark);">
+                  ${formatCurrency(order.totalSoldAtPrice ?? order.totalSellingPrice)}
+                </div>
+                <div style="font-size: 0.78rem; color: var(--text-muted);">
+                  ${order.totalSoldAtPrice ? `Actual Sold (Target: ${formatCurrency(order.totalSellingPrice)})` : 'Calculated Price'}
+                </div>
+                ${
+                  hasQuota
+                    ? `<div style="font-size: 0.78rem; font-weight: 700; color: ${quotaDiff >= 0 ? '#15803d' : '#b91c1c'}; margin-top: 0.2rem;">
+                        ${quotaDiff >= 0 ? `✓ +${formatCurrency(quotaDiff)} Target Met` : `⚠️ -${formatCurrency(Math.abs(quotaDiff))} Below Target`}
+                      </div>`
+                    : ''
+                }
               </div>
             </div>
 
@@ -80,10 +93,10 @@ export async function renderHistoryView(container: HTMLElement): Promise<void> {
                   <div style="background: #f8fafc; padding: 0.75rem 1rem; border-radius: var(--radius); border: 1px solid var(--border); font-size: 0.85rem;">
                     <div style="display: flex; justify-content: space-between; font-weight: 700;">
                       <span>${escapeHtml(item.recipeName)}</span>
-                      <span>${formatCurrency(item.sellingPrice)}</span>
+                      <span>${formatCurrency(item.soldAtPrice ?? item.sellingPrice)}</span>
                     </div>
                     <div style="color: var(--text-muted); font-size: 0.8rem; margin: 0.2rem 0;">
-                      Scaled: ${item.scaleMultiplier.toFixed(2)}x • Output: ${item.outputValue ?? ''} ${item.outputUnit ?? ''}
+                      Scaled: ${item.scaleMultiplier.toFixed(2)}x • Output: ${item.outputValue ?? ''} ${item.outputUnit ?? ''} • Target: ${formatCurrency(item.sellingPrice)} ${item.soldAtPrice ? `(Sold @ ${formatCurrency(item.soldAtPrice)})` : ''}
                     </div>
                     <div style="font-size: 0.8rem; color: #475569;">
                       Ingredients: ${item.scaledIngredients.map((ing) => `${ing.name}: ${ing.quantity}${ing.unit}`).join(', ')}
@@ -135,10 +148,35 @@ export async function renderHistoryView(container: HTMLElement): Promise<void> {
                   <span>Total Cost:</span>
                   <strong>${formatCurrency(order.totalCost)}</strong>
                 </div>
-                <div class="summary-row total">
-                  <span>Total Order Selling Price:</span>
-                  <span>${formatCurrency(order.totalSellingPrice)}</span>
+                <div class="summary-row">
+                  <span>Calculated Target Price:</span>
+                  <strong>${formatCurrency(order.totalSellingPrice)}</strong>
                 </div>
+                ${
+                  order.totalSoldAtPrice !== undefined
+                    ? `
+                  <div class="summary-row total" style="color: ${hasQuota && quotaDiff >= 0 ? '#14532d' : '#7f1d1d'};">
+                    <span>Actual Sold At Price:</span>
+                    <span>${formatCurrency(order.totalSoldAtPrice)}</span>
+                  </div>
+                  ${
+                    hasQuota
+                      ? `
+                    <div class="summary-row" style="font-size: 0.85rem; font-weight: 700; color: ${quotaDiff >= 0 ? '#15803d' : '#b91c1c'};">
+                      <span>Target Variance:</span>
+                      <span>${quotaDiff >= 0 ? `+${formatCurrency(quotaDiff)} (Target Met)` : `-${formatCurrency(Math.abs(quotaDiff))} (Below Target)`}</span>
+                    </div>
+                  `
+                      : ''
+                  }
+                `
+                    : `
+                  <div class="summary-row total">
+                    <span>Total Selling Price:</span>
+                    <span>${formatCurrency(order.totalSellingPrice)}</span>
+                  </div>
+                `
+                }
               </div>
             </div>
 
