@@ -12,9 +12,14 @@ export async function renderHistoryView(container: HTMLElement): Promise<void> {
         <h1 class="view-title">Order History & Calculations Log</h1>
         <p class="view-desc">Past production batches, quotes, and consolidated ingredient prep lists.</p>
       </div>
-      <a href="#calculator" class="btn btn-primary">
-        + New Calculation
-      </a>
+      <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+        <button id="btn-export-excel" class="btn btn-secondary">
+          📊 Export to Excel (.csv)
+        </button>
+        <a href="#calculator" class="btn btn-primary">
+          + New Calculation
+        </a>
+      </div>
     </div>
 
     <div class="card" style="padding: 0.75rem 1rem; margin-bottom: 1rem;">
@@ -59,7 +64,9 @@ export async function renderHistoryView(container: HTMLElement): Promise<void> {
                   <h3 style="font-size: 1.15rem; font-weight: 700; color: #0f172a;">${escapeHtml(order.title)}</h3>
                 </div>
                 <div style="font-size: 0.82rem; color: var(--text-muted); margin-top: 0.25rem;">
-                  📅 ${dateFormatted} • ${order.items.length} recipe(s)
+                  📅 Created: ${dateFormatted}
+                  ${order.deliveryDate ? ` • 🚚 <strong>Delivery: ${new Date(order.deliveryDate).toLocaleDateString('en-IN', { dateStyle: 'medium' })}</strong>` : ''}
+                  • ${order.items.length} recipe(s)
                 </div>
                 <div style="font-size: 0.85rem; color: #334155; margin-top: 0.35rem;">
                   <strong>Recipes:</strong> ${escapeHtml(recipesSummary)}
@@ -240,6 +247,74 @@ export async function renderHistoryView(container: HTMLElement): Promise<void> {
       (o) => o.title.toLowerCase().includes(q) || o.orderNumber.toLowerCase().includes(q)
     );
   }
+
+  function exportOrdersToExcel(itemsToExport: Order[]) {
+    if (itemsToExport.length === 0) {
+      alert('No orders to export.');
+      return;
+    }
+
+    const headers = [
+      'Order ID',
+      'Name',
+      'Order Date',
+      'Delivery Date',
+      'Recipes (Name + Qty)',
+      'Ingredients Cost (₹)',
+      'Target Cost (₹)',
+      'Target Price (₹)',
+      'Sold At Cost (₹)',
+      'Target Variance (₹)'
+    ];
+
+    const escapeCSV = (val: any) => {
+      if (val === undefined || val === null) return '""';
+      const str = String(val).replace(/"/g, '""');
+      return `"${str}"`;
+    };
+
+    const rows = itemsToExport.map((order) => {
+      const recipesStr = order.items
+        .map((item) => `${item.recipeName} (${item.outputValue} ${item.outputUnit})`)
+        .join(', ');
+
+      const soldAt = order.totalSoldAtPrice ?? order.totalSellingPrice;
+      const diff = order.quotaDifference !== undefined ? order.quotaDifference : 0;
+      const orderDate = new Date(order.date).toLocaleDateString('en-IN');
+      const deliveryDate = order.deliveryDate ? new Date(order.deliveryDate).toLocaleDateString('en-IN') : '—';
+
+      return [
+        escapeCSV(order.orderNumber),
+        escapeCSV(order.title || order.customerName || 'Untitled'),
+        escapeCSV(orderDate),
+        escapeCSV(deliveryDate),
+        escapeCSV(recipesStr),
+        escapeCSV(order.totalIngredientCost.toFixed(2)),
+        escapeCSV(order.totalCost.toFixed(2)),
+        escapeCSV(order.totalSellingPrice.toFixed(2)),
+        escapeCSV(soldAt.toFixed(2)),
+        escapeCSV(diff >= 0 ? `+${diff.toFixed(2)}` : diff.toFixed(2))
+      ].join(',');
+    });
+
+    // UTF-8 BOM so Excel opens UTF-8 symbols and commas properly
+    const csvContent = '\uFEFF' + [headers.map(escapeCSV).join(','), ...rows].join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const dateStr = new Date().toISOString().split('T')[0];
+    a.download = `cloud-crust-orders-${dateStr}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('Orders exported to Excel (.csv)');
+  }
+
+  container.querySelector('#btn-export-excel')?.addEventListener('click', () => {
+    exportOrdersToExcel(filterOrders(searchInput.value));
+  });
 
   searchInput.addEventListener('input', () => {
     renderOrders(filterOrders(searchInput.value));

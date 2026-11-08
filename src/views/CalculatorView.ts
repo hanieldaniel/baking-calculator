@@ -138,6 +138,10 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
           <label class="form-label" for="order-title">Batch Name / Reference</label>
           <input type="text" id="order-title" class="form-control" placeholder="e.g. 5kg Sourdough Order" />
         </div>
+        <div class="form-group" style="flex: 1; min-width: 160px; margin-bottom: 0;">
+          <label class="form-label" for="order-delivery-date">Delivery Date</label>
+          <input type="date" id="order-delivery-date" class="form-control" />
+        </div>
         <button id="btn-save-order" class="btn btn-primary btn-lg">
           💾 Save to History
         </button>
@@ -547,6 +551,9 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
     const effectiveSoldAtPrice = manualSoldAt ?? (hasItemSold ? itemsSoldSum : undefined);
     const quotaDifference = effectiveSoldAtPrice !== undefined ? Math.round((effectiveSoldAtPrice - finalPrice) * 100) / 100 : undefined;
 
+    const deliveryDateInput = container.querySelector('#order-delivery-date') as HTMLInputElement;
+    const deliveryDate = deliveryDateInput?.value || undefined;
+
     const dateStr = new Date().toISOString();
     const orderNum = `ORD-${Date.now().toString().slice(-6)}`;
     const title = orderTitleInput.value.trim() || `Batch #${orderNum}`;
@@ -557,6 +564,7 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
       title,
       customerName: orderTitleInput.value.trim(),
       date: dateStr,
+      deliveryDate,
       items: calculatedOrderItems,
       aggregatedIngredients: aggregated,
       totalIngredientCost: totalIngCost,
@@ -571,6 +579,7 @@ export async function renderCalculatorView(container: HTMLElement): Promise<void
     await fileSyncService.saveBackupToDisk();
     showToast(`Saved ${orderNum} to history and synced.`);
     orderTitleInput.value = '';
+    if (deliveryDateInput) deliveryDateInput.value = '';
     window.location.hash = '#history';
   });
 
